@@ -136,14 +136,16 @@ void* AllocatorCustomCpp::allocateWithRoute(const ZoneRoute& route, size_t size)
         if (p != nullptr) return p;
     }
 
-    /* Перебор остальных зон */
-    for (uint8_t i = 0; i < activeZones_; ++i) {
-        if (i == route.primary) continue;
-        if (route.trySecondary && i == route.secondary) continue;
-        if (!zones_[i].isInitialized()) continue;
+    /* Перебор остальных зон (только если разрешён fallback) */
+    if (route.trySecondary) {
+        for (uint8_t i = 0; i < activeZones_; ++i) {
+            if (i == route.primary) continue;
+            if (i == route.secondary) continue;
+            if (!zones_[i].isInitialized()) continue;
 
-        void* p = zones_[i].allocate(size);
-        if (p != nullptr) return p;
+            void* p = zones_[i].allocate(size);
+            if (p != nullptr) return p;
+        }
     }
 
     return nullptr;
