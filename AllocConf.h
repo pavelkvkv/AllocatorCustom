@@ -14,13 +14,23 @@
     #define ALLOC_STATIC_ASSERT(expr, msg) _Static_assert(expr, msg)
 #endif
 
+/**
+ * ALLOC_ASSERT — переопределяется извне.
+ * На хосте: assert(). На таргете (FreeRTOS): configASSERT().
+ */
 #ifndef ALLOC_ASSERT
-    #ifdef __cplusplus
-        #include <cassert>
+    #if defined(HOST_BUILD)
+        #ifdef __cplusplus
+            #include <cassert>
+        #else
+            #include <assert.h>
+        #endif
+        #define ALLOC_ASSERT(expr) assert(expr)
     #else
-        #include <assert.h>
+        /* На таргете используем configASSERT из FreeRTOS.h */
+        #include "FreeRTOS.h"
+        #define ALLOC_ASSERT(expr) configASSERT(expr)
     #endif
-    #define ALLOC_ASSERT(expr) assert(expr)
 #endif
 
 /* ──────────── Геометрия страницы ──────────── */
