@@ -1,6 +1,10 @@
 /**
  * @file PageAllocator.cpp
  * @brief Реализация страничного аллокатора одной зоны.
+ *
+ * Метаданные (requestedSize, pageCount, sequenceNum) хранятся в отдельной
+ * таблице AllocPageMeta, вырезанной из конца зоны при init().
+ * В области выделения — только канарейки произвольного размера.
  */
 #include "PageAllocator.hpp"
 #include "BlockGuard.hpp"
@@ -13,22 +17,33 @@ namespace AllocCustom {
 
 static_assert(ALLOC_PAGE_SIZE >= ALLOC_HEADER_SIZE + ALLOC_FOOTER_SIZE + 1U,
               "Страница слишком мала: header + footer + 1 байт payload");
-static_assert(sizeof(AllocBlockHeader) == ALLOC_HEADER_SIZE, "Header size");
-static_assert(sizeof(AllocBlockFooter) == ALLOC_FOOTER_SIZE, "Footer size");
+static_assert(ALLOC_HEADER_SIZE >= 1U, "Хедер-канарейка ≥ 1 байт");
+static_assert(ALLOC_FOOTER_SIZE >= 1U, "Футер-канарейка ≥ 1 байт");
 
 /* ───────── Инициализация ───────── */
 
 void PageAllocator::init(uint8_t* start, size_t size, uint8_t zone) {
     ALLOC_ASSERT(start != nullptr);
-    ALLOC_ASSERT(size >= ALLOC_PAGE_SIZE);
+    ALLOC_ASSERT(size >= ALLOC_PAGE_SIZE + sizeof(AllocPageMeta));
 
     baseAddress = start;
     regionSize  = size;
-    totalPages  = static_cast<uint16_t>(size / ALLOC_PAGE_SIZE);
     zoneIndex   = zone;
+
+    /*
+     * Разбиваем зону: [страницы][таблица метаданных].
+     * Каждая страница «стоит» PAGE_SIZE + sizeof(AllocPageMeta).
+     */
+    const size_t effectiveCost = ALLOC_PAGE_SIZE + sizeof(AllocPageMeta);
+    totalPages = static_cast<uint16_t>(size / effectiveCost);
 
     ALLOC_ASSERT(totalPages > 0U);
     ALLOC_ASSERT(totalPages <= ALLOC_MAX_PAGES_PER_ZONE);
+
+    /* Мета-таблица размещается сразу после последней страницы */
+    metaTable = reinterpret_cast<AllocPageMeta*>(
+        start + static_cast<size_t>(totalPages) * ALLOC_PAGE_SIZE);
+    std::memset(metaTable, 0, static_cast<size_t>(totalPages) * sizeof(AllocPageMeta));
 
     bitmapInUse.init(totalPages);
     bitmapAllocated.init(totalPages);
@@ -63,6 +78,11 @@ int32_t PageAllocator::pageIndex(const void* addr) const {
     return static_cast<int32_t>((ptr - baseAddress) / ALLOC_PAGE_SIZE);
 }
 
+const AllocPageMeta* PageAllocator::getMeta(uint16_t startPage) const {
+    ALLOC_ASSERT(startPage < totalPages);
+    return &metaTable[startPage];
+}
+
 /* ───────── Аллокация ───────── */
 
 void* PageAllocator::allocate(size_t requestedSize) {
@@ -90,23 +110,26 @@ void* PageAllocator::allocate(size_t requestedSize) {
     bitmapInUse.setRange(sp, pages);
     bitmapAllocated.setRange(sp, pages);
 
-    /* Хедер */
-    uint8_t* headerAddr = pageAddress(sp);
-    BlockGuard::writeHeader(headerAddr,
-                            static_cast<uint32_t>(requestedSize),
-                            sp, pages, zoneIndex, seq);
+    /* Заполняем мета-запись для стартовой страницы */
+    AllocPageMeta& meta = metaTable[sp];
+    meta.requestedSize = static_cast<uint32_t>(requestedSize);
+    meta.pageCount     = pages;
+    meta.startPage     = sp;
+    meta.sequenceNum   = seq;
 
-    /* Футер */
-    auto* header = reinterpret_cast<AllocBlockHeader*>(headerAddr);
-    auto* footer = BlockGuard::footerFromHeader(header);
-    BlockGuard::writeFooter(footer,
-                            static_cast<uint32_t>(requestedSize),
-                            sp, pages, zoneIndex, seq);
+    /* Хедер-канарейка */
+    uint8_t* headerAddr = pageAddress(sp);
+    BlockGuard::writeHeader(headerAddr);
+
+    /* Футер-канарейка */
+    void* footerAddr = BlockGuard::footerFromPage(headerAddr, meta.requestedSize);
+    BlockGuard::writeFooter(footerAddr);
 
     /* Паддинг */
-    const size_t padLen = BlockGuard::paddingSize(header);
+    const size_t padLen = BlockGuard::paddingSize(meta.requestedSize, pages);
     if (padLen > 0U) {
-        BlockGuard::fillPadding(BlockGuard::paddingFromHeader(header), padLen);
+        void* padAddr = BlockGuard::paddingFromPage(headerAddr, meta.requestedSize);
+        BlockGuard::fillPadding(padAddr, padLen);
     }
 
     /* Статистика */
@@ -116,7 +139,7 @@ void* PageAllocator::allocate(size_t requestedSize) {
     }
     ++successfulAllocs;
 
-    return BlockGuard::userDataFromHeader(headerAddr);
+    return BlockGuard::userDataFromPage(headerAddr);
 }
 
 /* ───────── Деаллокация ───────── */
@@ -124,21 +147,26 @@ void* PageAllocator::allocate(size_t requestedSize) {
 void PageAllocator::deallocate(void* userPtr) {
     if (!initialized || userPtr == nullptr) return;
 
-    /* Валидация хедера */
-    auto* header = BlockGuard::headerFromUserData(userPtr);
-    ALLOC_ASSERT(BlockGuard::validateHeader(header));
+    /* Определяем стартовую страницу */
+    void* pageStart = BlockGuard::pageFromUserData(userPtr);
+    const int32_t pi = pageIndex(pageStart);
+    ALLOC_ASSERT(pi >= 0);
+    const auto sp = static_cast<uint16_t>(pi);
 
-    /* Валидация футера */
-    const auto* footer = BlockGuard::footerFromHeader(
-                             const_cast<const AllocBlockHeader*>(header));
-    ALLOC_ASSERT(BlockGuard::validateFooter(footer));
-    ALLOC_ASSERT(BlockGuard::validatePair(header, footer));
+    /* Валидация канарейки хедера */
+    ALLOC_ASSERT(BlockGuard::validateHeader(pageStart));
+
+    /* Получаем метаданные */
+    const AllocPageMeta& meta = metaTable[sp];
+    ALLOC_ASSERT(meta.startPage == sp);
+    ALLOC_ASSERT(meta.pageCount > 0U);
+
+    /* Валидация канарейки футера */
+    const void* footerAddr = BlockGuard::footerFromPage(pageStart, meta.requestedSize);
+    ALLOC_ASSERT(BlockGuard::validateFooter(footerAddr));
 
     /* Принадлежность зоне */
-    ALLOC_ASSERT(header->zoneIndex == zoneIndex);
-    const uint16_t sp = header->startPage;
-    const uint16_t pc = header->pageCount;
-    ALLOC_ASSERT(static_cast<uint32_t>(sp) + pc <= totalPages);
+    ALLOC_ASSERT(static_cast<uint32_t>(sp) + meta.pageCount <= totalPages);
 
     /* Проверки целостности */
 #if ALLOC_QUARANTINE_CHECK_LEVEL > 0
@@ -150,7 +178,7 @@ void PageAllocator::deallocate(void* userPtr) {
 
     /* Добавление в карантин (с возможным вытеснением) */
     AllocQuarantineEntry evicted{};
-    const bool didEvict = quarantine.add(sp, pc, header->requestedSize,
+    const bool didEvict = quarantine.add(sp, meta.pageCount, meta.requestedSize,
                                          zoneIndex, &evicted);
     if (didEvict) {
         evictFromQuarantine(evicted);
@@ -158,18 +186,18 @@ void PageAllocator::deallocate(void* userPtr) {
 
     /* Заполнение payload карантинным паттерном */
 #if ALLOC_FILL_ON_FREE
-    BlockGuard::fillQuarantinePayload(userPtr, header->requestedSize);
+    BlockGuard::fillQuarantinePayload(userPtr, meta.requestedSize);
 #endif
 
     /* Обновление битовых карт:
      *   bitmapInUse      — остаётся 1 (карантин = «занято» для аллокатора)
      *   bitmapAllocated  — сбрасывается в 0 (уже не живая аллокация)
      */
-    bitmapAllocated.clearRange(sp, pc);
+    bitmapAllocated.clearRange(sp, meta.pageCount);
 
     /* MPU-защита карантинных страниц */
 #if ALLOC_ENABLE_MPU_PROTECTION
-    updateMpuProtection(sp, pc);
+    updateMpuProtection(sp, meta.pageCount);
 #endif
 
     ++successfulFrees;
@@ -201,6 +229,9 @@ void PageAllocator::evictFromQuarantine(const AllocQuarantineEntry& entry) {
     const size_t bytes = static_cast<size_t>(entry.pageCount) * ALLOC_PAGE_SIZE;
     BlockGuard::fillClearedPages(start, bytes);
 #endif
+
+    /* Очистка мета-записи стартовой страницы */
+    std::memset(&metaTable[entry.startPage], 0, sizeof(AllocPageMeta));
 
     /* Освобождение в битовых картах */
     bitmapInUse.clearRange(entry.startPage, entry.pageCount);
@@ -295,25 +326,25 @@ bool PageAllocator::verifyQuarantine() const {
         const auto* entry = quarantine.entryAt(i);
         if (!entry->active) continue;
 
-        const auto* header = reinterpret_cast<const AllocBlockHeader*>(
-            pageAddress(entry->startPage));
+        const void* pg = pageAddress(entry->startPage);
 
-        if (!BlockGuard::validateHeader(header)) return false;
+        /* Проверяем канарейку хедера */
+        if (!BlockGuard::validateHeader(pg)) return false;
 
-        const auto* footer = BlockGuard::footerFromHeader(header);
+        /* Проверяем канарейку футера (используем requestedSize из карантинной записи) */
+        const void* footer = BlockGuard::footerFromPage(pg, entry->requestedSize);
         if (!BlockGuard::validateFooter(footer)) return false;
-        if (!BlockGuard::validatePair(header, footer)) return false;
 
 #if ALLOC_QUARANTINE_CHECK_LEVEL >= 2
-        const void* payload = BlockGuard::userDataFromHeader(header);
-        if (!BlockGuard::validateQuarantinePayload(payload, header->requestedSize)) {
+        const void* payload = BlockGuard::userDataFromPage(pg);
+        if (!BlockGuard::validateQuarantinePayload(payload, entry->requestedSize)) {
             return false;
         }
 #endif
 
 #if ALLOC_QUARANTINE_CHECK_LEVEL >= 3
-        const void* pad = BlockGuard::paddingFromHeader(header);
-        const size_t ps = BlockGuard::paddingSize(header);
+        const void* pad = BlockGuard::paddingFromPage(pg, entry->requestedSize);
+        const size_t ps = BlockGuard::paddingSize(entry->requestedSize, entry->pageCount);
         if (ps > 0U && !BlockGuard::validatePadding(pad, ps)) {
             return false;
         }
@@ -331,19 +362,23 @@ bool PageAllocator::verifyAllocated() const {
             continue;
         }
 
-        const auto* header = reinterpret_cast<const AllocBlockHeader*>(pageAddress(i));
-
-        /* Проверяем, является ли страница началом области */
-        if (!BlockGuard::validateHeader(header) || header->startPage != i) {
+        /* Проверяем, является ли страница стартовой (через мета-таблицу) */
+        const AllocPageMeta& meta = metaTable[i];
+        if (meta.startPage != i || meta.pageCount == 0U) {
+            /* Продолжение многостраничной аллокации — пропускаем */
             ++i;
             continue;
         }
 
-        const auto* footer = BlockGuard::footerFromHeader(header);
-        if (!BlockGuard::validateFooter(footer)) return false;
-        if (!BlockGuard::validatePair(header, footer)) return false;
+        /* Валидация канарейки хедера */
+        const void* pg = pageAddress(i);
+        if (!BlockGuard::validateHeader(pg)) return false;
 
-        i = static_cast<uint16_t>(i + header->pageCount);
+        /* Валидация канарейки футера */
+        const void* footer = BlockGuard::footerFromPage(pg, meta.requestedSize);
+        if (!BlockGuard::validateFooter(footer)) return false;
+
+        i = static_cast<uint16_t>(i + meta.pageCount);
     }
     return true;
 }

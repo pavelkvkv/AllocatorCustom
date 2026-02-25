@@ -30,6 +30,8 @@ target_include_directories(AllocatorCustomCpp PUBLIC
 target_link_libraries(AllocatorCustomCpp
     PUBLIC
         freertos_kernel
+    PRIVATE
+        $<$<NOT:$<BOOL:${HOST_BUILD}>>:Log_Interface>
 )
 
 add_library(Project::AllocatorCustomCpp ALIAS AllocatorCustomCpp)

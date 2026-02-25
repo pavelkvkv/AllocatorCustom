@@ -1,6 +1,9 @@
 /**
  * @file PageAllocator.hpp
  * @brief Страничный аллокатор одной зоны памяти (POD, trivially constructible).
+ *
+ * Метаданные хранятся в отдельной таблице AllocPageMeta, вырезанной из конца
+ * зоны при инициализации. В области выделения — только канарейки.
  */
 #pragma once
 
@@ -17,7 +20,8 @@ namespace AllocCustom {
  * @brief Страничный аллокатор для одной непрерывной зоны.
  *
  * Выделяет память страницами по ALLOC_PAGE_SIZE байт.
- * Каждая область обрамляется хедером и футером.
+ * Каждая область обрамляется канарейками (хедер/футер).
+ * Метаданные хранятся в отдельной таблице AllocPageMeta.
  * Освобождённые области помещаются в карантин.
  *
  * POD-тип: zero-init из BSS безопасен. Инициализация — через init().
@@ -30,6 +34,9 @@ struct PageAllocator {
     uint16_t totalPages;
     uint8_t  zoneIndex;
     bool     initialized;
+
+    /* ── Таблица метаданных (вырезана из конца зоны) ── */
+    AllocPageMeta* metaTable;
 
     /* ── Битовые карты ── */
     PageBitmap bitmapInUse;      /**< 1 = занято/карантин, 0 = свободно */
@@ -66,11 +73,14 @@ struct PageAllocator {
     /** Проверить все записи карантина (возвращает false при порче). */
     bool verifyQuarantine() const;
 
-    /** Проверить хедеры/футеры всех аллоцированных областей. */
+    /** Проверить канарейки всех аллоцированных областей. */
     bool verifyAllocated() const;
 
     /** Выполнить все включённые проверки. */
     bool runChecks() const;
+
+    /** Получить метаданные по номеру стартовой страницы. */
+    const AllocPageMeta* getMeta(uint16_t startPage) const;
 
 private:
     static uint16_t pagesNeeded(size_t requestedSize);

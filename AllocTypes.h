@@ -15,46 +15,17 @@ extern "C" {
 #endif
 
 /**
- * @brief Хедер аллоцированной области (32 байта).
+ * @brief Метаданные аллоцированной области.
  *
- * Располагается в начале первой страницы выделенной области.
- * Контрольная сумма покрывает все поля кроме самой себя.
+ * Хранятся в отдельной таблице, индексированной по номеру стартовой страницы.
+ * НЕ размещаются внутри области выделения — там только канарейки.
  */
 typedef struct {
-    uint32_t magic;           /**< ALLOC_PATTERN_HEADER_MAGIC */
     uint32_t requestedSize;   /**< Запрошенный пользователем размер (байт) */
-    uint16_t startPage;       /**< Индекс первой страницы в зоне */
     uint16_t pageCount;       /**< Число выделенных страниц */
-    uint8_t  zoneIndex;       /**< Индекс зоны */
-    uint8_t  reserved[3];     /**< Резерв (выравнивание) */
+    uint16_t startPage;       /**< Индекс стартовой страницы (самопроверка) */
     uint32_t sequenceNum;     /**< Порядковый номер аллокации */
-    uint32_t reserved2;       /**< Задел: TaskHandle_t */
-    uint32_t reserved3;       /**< Задел: доп. данные */
-    uint32_t checksum;        /**< XOR слов [0..6] */
-} AllocBlockHeader;
-
-/**
- * @brief Футер аллоцированной области (32 байта).
- *
- * Дублирует критичные поля хедера для перекрёстной валидации.
- */
-typedef struct {
-    uint32_t magic;           /**< ALLOC_PATTERN_FOOTER_MAGIC */
-    uint32_t requestedSize;   /**< Копия requestedSize */
-    uint16_t startPage;       /**< Копия startPage */
-    uint16_t pageCount;       /**< Копия pageCount */
-    uint8_t  zoneIndex;       /**< Копия zoneIndex */
-    uint8_t  reserved[3];     /**< Резерв */
-    uint32_t sequenceNum;     /**< Копия sequenceNum */
-    uint32_t reserved2;       /**< Задел: TaskHandle_t */
-    uint32_t reserved3;       /**< Задел */
-    uint32_t checksum;        /**< XOR слов [0..6] */
-} AllocBlockFooter;
-
-ALLOC_STATIC_ASSERT(sizeof(AllocBlockHeader) == ALLOC_HEADER_SIZE,
-                     "AllocBlockHeader size must equal ALLOC_HEADER_SIZE");
-ALLOC_STATIC_ASSERT(sizeof(AllocBlockFooter) == ALLOC_FOOTER_SIZE,
-                     "AllocBlockFooter size must equal ALLOC_FOOTER_SIZE");
+} AllocPageMeta;
 
 /**
  * @brief Запись в таблице карантина.

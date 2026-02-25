@@ -1,43 +1,41 @@
 /**
  * @file BlockGuard.hpp
- * @brief Создание и валидация хедеров/футеров областей.
+ * @brief Создание и валидация канареек (хедер/футер) и паттернов.
+ *
+ * Канарейки — повторяющийся 4-байтный паттерн, проверяемый побайтово.
+ * Метаданные аллокации хранятся отдельно (AllocPageMeta), не в области данных.
  */
 #pragma once
 
 #include <cstdint>
 #include <cstddef>
 #include "AllocConf.h"
-#include "AllocTypes.h"
 
 namespace AllocCustom {
 
 /**
- * @brief Статические методы для работы с хедерами и футерами.
- *
- * Не содержит состояния — все методы статические.
+ * @brief Статические методы для работы с канарейками и паттернами.
  */
 struct BlockGuard {
-    /* ── Контрольная сумма ── */
+    /* ── Канарейки ── */
 
-    /** XOR всех uint32_t слов блока, кроме последнего (checksum). */
-    static uint32_t computeChecksum(const void* block, size_t blockSize);
+    /** Заполнить dest повторяющимся 4-байтным паттерном. */
+    static void writeCanary(void* dest, uint32_t pattern, size_t size);
 
-    /* ── Запись ── */
+    /** Проверить что src заполнен повторяющимся паттерном. */
+    static bool validateCanary(const void* src, uint32_t pattern, size_t size);
 
-    static void writeHeader(void* dest, uint32_t requestedSize,
-                            uint16_t startPage, uint16_t pageCount,
-                            uint8_t zoneIndex, uint32_t sequenceNum);
+    /** Записать хедер-канарейку (ALLOC_HEADER_SIZE байт). */
+    static void writeHeader(void* dest);
 
-    static void writeFooter(void* dest, uint32_t requestedSize,
-                            uint16_t startPage, uint16_t pageCount,
-                            uint8_t zoneIndex, uint32_t sequenceNum);
+    /** Записать футер-канарейку (ALLOC_FOOTER_SIZE байт). */
+    static void writeFooter(void* dest);
 
-    /* ── Валидация ── */
-
+    /** Валидировать хедер-канарейку. */
     static bool validateHeader(const void* headerPtr);
+
+    /** Валидировать футер-канарейку. */
     static bool validateFooter(const void* footerPtr);
-    static bool validatePair(const AllocBlockHeader* header,
-                             const AllocBlockFooter* footer);
 
     /* ── Паттерны ── */
 
@@ -50,19 +48,24 @@ struct BlockGuard {
 
     /* ── Навигация по области ── */
 
-    static void*                   userDataFromHeader(void* headerPtr);
-    static const void*             userDataFromHeader(const void* headerPtr);
+    /** Указатель на пользовательские данные из начала страницы (хедера). */
+    static void*       userDataFromPage(void* pageStart);
+    static const void* userDataFromPage(const void* pageStart);
 
-    static AllocBlockHeader*       headerFromUserData(void* userData);
-    static const AllocBlockHeader* headerFromUserData(const void* userData);
+    /** Начало страницы (хедера) из указателя на пользовательские данные. */
+    static void*       pageFromUserData(void* userData);
+    static const void* pageFromUserData(const void* userData);
 
-    static AllocBlockFooter*       footerFromHeader(AllocBlockHeader* header);
-    static const AllocBlockFooter* footerFromHeader(const AllocBlockHeader* header);
+    /** Указатель на футер по началу страницы и requestedSize (из мета-таблицы). */
+    static void*       footerFromPage(void* pageStart, uint32_t requestedSize);
+    static const void* footerFromPage(const void* pageStart, uint32_t requestedSize);
 
-    static void*                   paddingFromHeader(AllocBlockHeader* header);
-    static const void*             paddingFromHeader(const AllocBlockHeader* header);
+    /** Указатель на паддинг по началу страницы, requestedSize и pageCount. */
+    static void*       paddingFromPage(void* pageStart, uint32_t requestedSize);
+    static const void* paddingFromPage(const void* pageStart, uint32_t requestedSize);
 
-    static size_t paddingSize(const AllocBlockHeader* header);
+    /** Размер паддинга. */
+    static size_t paddingSize(uint32_t requestedSize, uint16_t pageCount);
 };
 
 } // namespace AllocCustom

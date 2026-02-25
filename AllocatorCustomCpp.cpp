@@ -13,6 +13,12 @@
 #include <mutex>
 #else
 #include "task.h"
+/* Логирование — только на таргете */
+#if ALLOC_ENABLE_LOGGING
+#define TAG "Alloc"
+#define LOG_LEVEL LOG_LEVEL_WARN
+#include "log.h"
+#endif
 #endif
 
 /* ─────────────────── Глобальный экземпляр ─────────────────── */
@@ -23,6 +29,17 @@ namespace {
 #ifdef HOST_BUILD
     std::mutex g_allocMutex;
 #endif
+
+    /** Получить имя текущего таска (или "???" если недоступно). */
+    inline const char* currentTaskName() {
+#if !defined(HOST_BUILD) && ALLOC_ENABLE_LOGGING
+        TaskHandle_t h = xTaskGetCurrentTaskHandle();
+        if (h != nullptr) {
+            return pcTaskGetName(h);
+        }
+#endif
+        return "???";
+    }
 } // namespace
 
 static_assert(std::is_trivially_constructible<AllocCustom::AllocatorCustomCpp>::value,
@@ -121,10 +138,28 @@ AllocatorCustomCpp::resolveRoute(HeapZone_t zone) const {
 }
 
 void* AllocatorCustomCpp::allocateWithRoute(const ZoneRoute& route, size_t size) {
+#if !defined(HOST_BUILD) && ALLOC_ENABLE_LOGGING && ALLOC_LOG_SMALL_ALLOC_WARN
+    /* Пороги по зоне: используем константы до аллокации */
+    static constexpr size_t kThreshFast = ALLOC_LOG_SMALL_ALLOC_THRESHOLD_FAST;
+    static constexpr size_t kThreshSlow = ALLOC_LOG_SMALL_ALLOC_THRESHOLD_SLOW;
+#endif
+
     /* Попытка в primary */
     if (route.primary < activeZones_ && zones_[route.primary].isInitialized()) {
         void* p = zones_[route.primary].allocate(size);
-        if (p != nullptr) return p;
+        if (p != nullptr) {
+#if !defined(HOST_BUILD) && ALLOC_ENABLE_LOGGING && ALLOC_LOG_SMALL_ALLOC_WARN
+            const size_t thresh = (route.primary == 0U) ? kThreshFast : kThreshSlow;
+            if (size > 0U && size < thresh) {
+                logW("мелкая аллокация zone%u: %u Б (порог %u), таск: %s",
+                     route.primary,
+                     static_cast<unsigned>(size),
+                     static_cast<unsigned>(thresh),
+                     currentTaskName());
+            }
+#endif
+            return p;
+        }
     }
 
     /* Попытка в secondary */
@@ -133,7 +168,26 @@ void* AllocatorCustomCpp::allocateWithRoute(const ZoneRoute& route, size_t size)
         route.secondary != route.primary &&
         zones_[route.secondary].isInitialized()) {
         void* p = zones_[route.secondary].allocate(size);
-        if (p != nullptr) return p;
+        if (p != nullptr) {
+#if !defined(HOST_BUILD) && ALLOC_ENABLE_LOGGING
+#if ALLOC_LOG_SECONDARY_ZONE_WARN
+            logW("fallback zone%u→%u %u Б (primary полна), таск: %s",
+                 route.primary, route.secondary,
+                 static_cast<unsigned>(size), currentTaskName());
+#endif
+#if ALLOC_LOG_SMALL_ALLOC_WARN
+            const size_t thresh = (route.secondary == 0U) ? kThreshFast : kThreshSlow;
+            if (size > 0U && size < thresh) {
+                logW("мелкая аллокация zone%u: %u Б (порог %u), таск: %s",
+                     route.secondary,
+                     static_cast<unsigned>(size),
+                     static_cast<unsigned>(thresh),
+                     currentTaskName());
+            }
+#endif
+#endif
+            return p;
+        }
     }
 
     /* Перебор остальных зон (только если разрешён fallback) */
@@ -144,7 +198,26 @@ void* AllocatorCustomCpp::allocateWithRoute(const ZoneRoute& route, size_t size)
             if (!zones_[i].isInitialized()) continue;
 
             void* p = zones_[i].allocate(size);
-            if (p != nullptr) return p;
+            if (p != nullptr) {
+#if !defined(HOST_BUILD) && ALLOC_ENABLE_LOGGING
+#if ALLOC_LOG_SECONDARY_ZONE_WARN
+                logW("fallback zone%u→%u %u Б (primary+secondary полны), таск: %s",
+                     route.primary, i,
+                     static_cast<unsigned>(size), currentTaskName());
+#endif
+#if ALLOC_LOG_SMALL_ALLOC_WARN
+                const size_t thresh = (i == 0U) ? kThreshFast : kThreshSlow;
+                if (size > 0U && size < thresh) {
+                    logW("мелкая аллокация zone%u: %u Б (порог %u), таск: %s",
+                         i,
+                         static_cast<unsigned>(size),
+                         static_cast<unsigned>(thresh),
+                         currentTaskName());
+                }
+#endif
+#endif
+                return p;
+            }
         }
     }
 

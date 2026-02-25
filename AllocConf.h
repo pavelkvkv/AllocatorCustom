@@ -37,17 +37,23 @@
 
 /** Размер физической страницы (байт). Все аллокации кратны этому значению. */
 #ifndef ALLOC_PAGE_SIZE
-#define ALLOC_PAGE_SIZE 1024U
+#define ALLOC_PAGE_SIZE 512U
 #endif
 
-/** Размер хедера области (байт). */
+/**
+ * Размер хедера-канарейки (байт). Произвольный, ≥ 1.
+ * Заполняется повторяющимся ALLOC_PATTERN_HEADER_MAGIC.
+ */
 #ifndef ALLOC_HEADER_SIZE
-#define ALLOC_HEADER_SIZE 32U
+#define ALLOC_HEADER_SIZE 8U
 #endif
 
-/** Размер футера области (байт). */
+/**
+ * Размер футера-канарейки (байт). Произвольный, ≥ 1.
+ * Заполняется повторяющимся ALLOC_PATTERN_FOOTER_MAGIC.
+ */
 #ifndef ALLOC_FOOTER_SIZE
-#define ALLOC_FOOTER_SIZE 32U
+#define ALLOC_FOOTER_SIZE 8U
 #endif
 
 /* ──────────── Лимиты ──────────── */
@@ -59,12 +65,12 @@
 
 /** Максимальное число страниц на одну зону (10 МиБ / 1024). */
 #ifndef ALLOC_MAX_PAGES_PER_ZONE
-#define ALLOC_MAX_PAGES_PER_ZONE 10240U
+#define ALLOC_MAX_PAGES_PER_ZONE (10U * 1024U * 1024U / ALLOC_PAGE_SIZE)
 #endif
 
 /** Размер таблицы карантина (записей о последних освобождениях). */
 #ifndef ALLOC_QUARANTINE_CAPACITY
-#define ALLOC_QUARANTINE_CAPACITY 32U
+#define ALLOC_QUARANTINE_CAPACITY 2U
 #endif
 
 /* ──────────── Паттерны ──────────── */
@@ -114,17 +120,17 @@
  *   3 — + паддинг
  */
 #ifndef ALLOC_QUARANTINE_CHECK_LEVEL
-#define ALLOC_QUARANTINE_CHECK_LEVEL 1
+#define ALLOC_QUARANTINE_CHECK_LEVEL 2
 #endif
 
 /** Проверять хедеры и футеры ВСЕХ аллоцированных областей при alloc/free. */
 #ifndef ALLOC_CHECK_ALL_ALLOCATED
-#define ALLOC_CHECK_ALL_ALLOCATED 0
+#define ALLOC_CHECK_ALL_ALLOCATED 1
 #endif
 
 /** Защита карантинных страниц через MPU. */
 #ifndef ALLOC_ENABLE_MPU_PROTECTION
-#define ALLOC_ENABLE_MPU_PROTECTION 0
+#define ALLOC_ENABLE_MPU_PROTECTION 1
 #endif
 
 /** Первый регион MPU, доступный аллокатору. */
@@ -135,4 +141,49 @@
 /** Число регионов MPU, доступных аллокатору. */
 #ifndef ALLOC_MPU_REGION_COUNT
 #define ALLOC_MPU_REGION_COUNT 2
+#endif
+
+/* ──────────── Логирование ──────────── */
+
+/**
+ * Включить логирование через Log-компонент (только на таргете).
+ * На хосте (HOST_BUILD) логи всегда отключены.
+ */
+#ifndef ALLOC_ENABLE_LOGGING
+#define ALLOC_ENABLE_LOGGING 1
+#endif
+
+/**
+ * Включить предупреждение о мелких аллокациях.
+ * Работает независимо от ALLOC_LOG_SECONDARY_ZONE_WARN.
+ * 0 — отключено, 1 — включено.
+ */
+#ifndef ALLOC_LOG_SMALL_ALLOC_WARN
+#define ALLOC_LOG_SMALL_ALLOC_WARN 1
+#endif
+
+/**
+ * Порог «маленькой аллокации» для быстрой зоны (zone 0), байт.
+ * Мелкие аллокации в SRAM занимают целую страницу — повод для ревью.
+ * Аллокации < этого значения вызывают logW с таском-инициатором.
+ */
+#ifndef ALLOC_LOG_SMALL_ALLOC_THRESHOLD_FAST
+#define ALLOC_LOG_SMALL_ALLOC_THRESHOLD_FAST 64U
+#endif
+
+/**
+ * Порог «маленькой аллокации» для медленной зоны (zone 1), байт.
+ * В PSRAM мелкие объекты тормозят больше: рекомендуется выше порога FAST.
+ * Аллокации < этого значения вызывают logW с таском-инициатором.
+ */
+#ifndef ALLOC_LOG_SMALL_ALLOC_THRESHOLD_SLOW
+#define ALLOC_LOG_SMALL_ALLOC_THRESHOLD_SLOW 256U
+#endif
+
+/**
+ * Логировать предупреждение при аллокации во вторичной зоне (fallback).
+ * 0 — отключено, 1 — включено.
+ */
+#ifndef ALLOC_LOG_SECONDARY_ZONE_WARN
+#define ALLOC_LOG_SECONDARY_ZONE_WARN 1
 #endif
