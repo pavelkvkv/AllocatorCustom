@@ -187,3 +187,44 @@
 #ifndef ALLOC_LOG_SECONDARY_ZONE_WARN
 #define ALLOC_LOG_SECONDARY_ZONE_WARN 1
 #endif
+
+/* ──────────── Трассировка операций ──────────── */
+
+/**
+ * Размер кольцевого буфера трассировки аллокаций (записей).
+ * Хранит последние N операций alloc/free с размером, зоной и владельцем.
+ * 0 — выключено.
+ *
+ * Чтение из отладчика: (gdb) p g_allocTrace
+ */
+#ifndef ALLOC_TRACE_BUFFER_SIZE
+#define ALLOC_TRACE_BUFFER_SIZE 32U
+#endif
+
+/**
+ * Логировать каждую аллокацию/деаллокацию через logF_ISR.
+ * Формат: "alloc 64B Z0 TaskName\n" / "free 64B Z0 TaskName\n"
+ * 0 — отключено, 1 — включено.
+ * Требует ALLOC_ENABLE_LOGGING == 1.
+ */
+#ifndef ALLOC_TRACE_LOG_OPERATIONS
+#define ALLOC_TRACE_LOG_OPERATIONS 0
+#endif
+
+/* ──────────── Обработчик ошибок кучи ──────────── */
+
+#if ALLOC_TRACE_BUFFER_SIZE > 0
+    #ifdef __cplusplus
+    extern "C"
+    #endif
+    void alloc_trace_dump(void);
+
+    /**
+     * ALLOC_FAIL — при обнаружении порчи кучи/карантина.
+     * Выводит кольцевой буфер последних операций, затем ассертит.
+     */
+    #define ALLOC_FAIL(msg) \
+        do { alloc_trace_dump(); ALLOC_ASSERT(0 && (msg)); } while(0)
+#else
+    #define ALLOC_FAIL(msg) ALLOC_ASSERT(0 && (msg))
+#endif

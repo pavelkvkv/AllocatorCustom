@@ -11,6 +11,14 @@
 #include "MpuGuard.hpp"
 #include <cstring>
 
+/* Диагностический вывод при обнаружении порчи (ISR-safe, без метаданных) */
+#if !defined(HOST_BUILD) && ALLOC_ENABLE_LOGGING
+#include "log_isr.h"
+#define ALLOC_DIAG(fmt, ...) logF_ISR(fmt "\n", ##__VA_ARGS__)
+#else
+#define ALLOC_DIAG(fmt, ...) ((void)0)
+#endif
+
 namespace AllocCustom {
 
 /* ───────── Проверки конфигурации ───────── */
@@ -83,6 +91,14 @@ const AllocPageMeta* PageAllocator::getMeta(uint16_t startPage) const {
     return &metaTable[startPage];
 }
 
+uint32_t PageAllocator::getRequestedSize(const void* userPtr) const {
+    if (!initialized || userPtr == nullptr) return 0U;
+    const void* ps = BlockGuard::pageFromUserData(userPtr);
+    const int32_t pi = pageIndex(ps);
+    if (pi < 0) return 0U;
+    return metaTable[static_cast<uint16_t>(pi)].requestedSize;
+}
+
 /* ───────── Аллокация ───────── */
 
 void* PageAllocator::allocate(size_t requestedSize) {
@@ -93,10 +109,10 @@ void* PageAllocator::allocate(size_t requestedSize) {
 
     /* Проверки целостности перед операцией */
 #if ALLOC_QUARANTINE_CHECK_LEVEL > 0
-    ALLOC_ASSERT(verifyQuarantine());
+    if (!verifyQuarantine()) { ALLOC_FAIL("quarantine corrupted on alloc"); }
 #endif
 #if ALLOC_CHECK_ALL_ALLOCATED
-    ALLOC_ASSERT(verifyAllocated());
+    if (!verifyAllocated()) { ALLOC_FAIL("allocated blocks corrupted on alloc"); }
 #endif
 
     /* Поиск непрерывного свободного участка */
@@ -150,30 +166,54 @@ void PageAllocator::deallocate(void* userPtr) {
     /* Определяем стартовую страницу */
     void* pageStart = BlockGuard::pageFromUserData(userPtr);
     const int32_t pi = pageIndex(pageStart);
-    ALLOC_ASSERT(pi >= 0);
+    if (pi < 0) {
+        ALLOC_DIAG("DEALLOC ERR: ptr=%p вне зоны Z%u [%p..+%u стр]",
+                    userPtr, zoneIndex, baseAddress, totalPages);
+        ALLOC_FAIL("dealloc: pointer outside zone");
+    }
     const auto sp = static_cast<uint16_t>(pi);
 
     /* Валидация канарейки хедера */
-    ALLOC_ASSERT(BlockGuard::validateHeader(pageStart));
+    if (!BlockGuard::validateHeader(pageStart)) {
+        ALLOC_DIAG("DEALLOC ERR: header corrupted ptr=%p Z%u page=%u",
+                    userPtr, zoneIndex, sp);
+        ALLOC_FAIL("dealloc: header canary corrupted");
+    }
 
     /* Получаем метаданные */
     const AllocPageMeta& meta = metaTable[sp];
-    ALLOC_ASSERT(meta.startPage == sp);
-    ALLOC_ASSERT(meta.pageCount > 0U);
+    if (meta.startPage != sp) {
+        ALLOC_DIAG("DEALLOC ERR: meta.startPage=%u != sp=%u, ptr=%p Z%u",
+                    meta.startPage, sp, userPtr, zoneIndex);
+        ALLOC_FAIL("dealloc: meta startPage mismatch");
+    }
+    if (meta.pageCount == 0U) {
+        ALLOC_DIAG("DEALLOC ERR: meta.pageCount=0, ptr=%p Z%u page=%u seq=%u",
+                    userPtr, zoneIndex, sp, meta.sequenceNum);
+        ALLOC_FAIL("dealloc: meta pageCount is zero");
+    }
 
     /* Валидация канарейки футера */
     const void* footerAddr = BlockGuard::footerFromPage(pageStart, meta.requestedSize);
-    ALLOC_ASSERT(BlockGuard::validateFooter(footerAddr));
+    if (!BlockGuard::validateFooter(footerAddr)) {
+        ALLOC_DIAG("DEALLOC ERR: footer corrupted ptr=%p Z%u page=%u size=%u seq=%u",
+                    userPtr, zoneIndex, sp, meta.requestedSize, meta.sequenceNum);
+        ALLOC_FAIL("dealloc: footer canary corrupted");
+    }
 
     /* Принадлежность зоне */
-    ALLOC_ASSERT(static_cast<uint32_t>(sp) + meta.pageCount <= totalPages);
+    if (static_cast<uint32_t>(sp) + meta.pageCount > totalPages) {
+        ALLOC_DIAG("DEALLOC ERR: block [page=%u +%u стр] выходит за зону Z%u (%u стр), ptr=%p",
+                    sp, meta.pageCount, zoneIndex, totalPages, userPtr);
+        ALLOC_FAIL("dealloc: block extends beyond zone");
+    }
 
     /* Проверки целостности */
 #if ALLOC_QUARANTINE_CHECK_LEVEL > 0
-    ALLOC_ASSERT(verifyQuarantine());
+    if (!verifyQuarantine()) { ALLOC_FAIL("quarantine corrupted on dealloc"); }
 #endif
 #if ALLOC_CHECK_ALL_ALLOCATED
-    ALLOC_ASSERT(verifyAllocated());
+    if (!verifyAllocated()) { ALLOC_FAIL("allocated blocks corrupted on dealloc"); }
 #endif
 
     /* Добавление в карантин (с возможным вытеснением) */
@@ -327,17 +367,28 @@ bool PageAllocator::verifyQuarantine() const {
         if (!entry->active) continue;
 
         const void* pg = pageAddress(entry->startPage);
+        const void* userData = BlockGuard::userDataFromPage(pg);
 
         /* Проверяем канарейку хедера */
-        if (!BlockGuard::validateHeader(pg)) return false;
+        if (!BlockGuard::validateHeader(pg)) {
+            ALLOC_DIAG("QUARANTINE: header corrupted Z%u qslot=%u page=%u addr=%p size=%u",
+                        zoneIndex, i, entry->startPage, userData, entry->requestedSize);
+            return false;
+        }
 
         /* Проверяем канарейку футера (используем requestedSize из карантинной записи) */
         const void* footer = BlockGuard::footerFromPage(pg, entry->requestedSize);
-        if (!BlockGuard::validateFooter(footer)) return false;
+        if (!BlockGuard::validateFooter(footer)) {
+            ALLOC_DIAG("QUARANTINE: footer corrupted Z%u qslot=%u page=%u addr=%p size=%u",
+                        zoneIndex, i, entry->startPage, userData, entry->requestedSize);
+            return false;
+        }
 
 #if ALLOC_QUARANTINE_CHECK_LEVEL >= 2
         const void* payload = BlockGuard::userDataFromPage(pg);
         if (!BlockGuard::validateQuarantinePayload(payload, entry->requestedSize)) {
+            ALLOC_DIAG("QUARANTINE: payload corrupted Z%u qslot=%u page=%u addr=%p size=%u",
+                        zoneIndex, i, entry->startPage, userData, entry->requestedSize);
             return false;
         }
 #endif
@@ -346,6 +397,8 @@ bool PageAllocator::verifyQuarantine() const {
         const void* pad = BlockGuard::paddingFromPage(pg, entry->requestedSize);
         const size_t ps = BlockGuard::paddingSize(entry->requestedSize, entry->pageCount);
         if (ps > 0U && !BlockGuard::validatePadding(pad, ps)) {
+            ALLOC_DIAG("QUARANTINE: padding corrupted Z%u qslot=%u page=%u addr=%p size=%u",
+                        zoneIndex, i, entry->startPage, userData, entry->requestedSize);
             return false;
         }
 #endif
@@ -370,13 +423,23 @@ bool PageAllocator::verifyAllocated() const {
             continue;
         }
 
-        /* Валидация канарейки хедера */
         const void* pg = pageAddress(i);
-        if (!BlockGuard::validateHeader(pg)) return false;
+        const void* userData = BlockGuard::userDataFromPage(pg);
+
+        /* Валидация канарейки хедера */
+        if (!BlockGuard::validateHeader(pg)) {
+            ALLOC_DIAG("ALLOCATED: header corrupted Z%u page=%u addr=%p size=%u seq=%u",
+                        zoneIndex, i, userData, meta.requestedSize, meta.sequenceNum);
+            return false;
+        }
 
         /* Валидация канарейки футера */
         const void* footer = BlockGuard::footerFromPage(pg, meta.requestedSize);
-        if (!BlockGuard::validateFooter(footer)) return false;
+        if (!BlockGuard::validateFooter(footer)) {
+            ALLOC_DIAG("ALLOCATED: footer corrupted Z%u page=%u addr=%p size=%u seq=%u",
+                        zoneIndex, i, userData, meta.requestedSize, meta.sequenceNum);
+            return false;
+        }
 
         i = static_cast<uint16_t>(i + meta.pageCount);
     }

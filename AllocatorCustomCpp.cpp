@@ -19,6 +19,10 @@
 #define LOG_LEVEL LOG_LEVEL_WARN
 #include "log.h"
 #endif
+/* logF_ISR для трассировки и дампа */
+#if ALLOC_TRACE_BUFFER_SIZE > 0 && ALLOC_ENABLE_LOGGING
+#include "log_isr.h"
+#endif
 #endif
 
 /* ─────────────────── Глобальный экземпляр ─────────────────── */
@@ -44,6 +48,85 @@ namespace {
 
 static_assert(std::is_trivially_constructible<AllocCustom::AllocatorCustomCpp>::value,
               "AllocatorCustomCpp must be trivially constructible for BSS placement");
+
+/* ═══════════════════ Трассировка операций ═══════════════════ */
+
+#if ALLOC_TRACE_BUFFER_SIZE > 0
+
+/** Глобальный кольцевой буфер — доступен из отладчика: (gdb) p g_allocTrace */
+extern "C" AllocTraceRing g_allocTrace;
+AllocTraceRing g_allocTrace;
+
+static void allocTraceRecord(uint32_t size, uint8_t zone, uint8_t op, void* addr) {
+    const char* name = "???";
+#if !defined(HOST_BUILD)
+    TaskHandle_t h = xTaskGetCurrentTaskHandle();
+    if (h != nullptr) {
+        name = pcTaskGetName(h);
+    }
+#endif
+
+    AllocTraceEntry& e = g_allocTrace.entries[g_allocTrace.head];
+    e.addr      = addr;
+    e.size      = size;
+    e.zone      = zone;
+    e.op        = op;
+    e._reserved = 0U;
+
+    /* Копируем имя таска — TCB может быть удалён к моменту чтения буфера */
+    {
+        size_t i = 0U;
+        while (i < ALLOC_TRACE_NAME_LEN - 1U && name[i] != '\0') {
+            e.task[i] = name[i];
+            ++i;
+        }
+        e.task[i] = '\0';
+    }
+
+    g_allocTrace.head = (g_allocTrace.head + 1U) % ALLOC_TRACE_BUFFER_SIZE;
+    ++g_allocTrace.totalOps;
+
+#if !defined(HOST_BUILD) && ALLOC_ENABLE_LOGGING && ALLOC_TRACE_LOG_OPERATIONS
+    logF_ISR("%s %uB Z%u %p %s\n",
+             (op == 'A') ? "alloc" : "free",
+             static_cast<unsigned>(size),
+             static_cast<unsigned>(zone),
+             addr,
+             e.task);
+#endif
+}
+
+extern "C" void alloc_trace_dump(void) {
+    const uint32_t count = (g_allocTrace.totalOps < ALLOC_TRACE_BUFFER_SIZE)
+                           ? g_allocTrace.totalOps
+                           : static_cast<uint32_t>(ALLOC_TRACE_BUFFER_SIZE);
+    if (count == 0U) return;
+
+#if !defined(HOST_BUILD) && ALLOC_ENABLE_LOGGING
+    logF_ISR("=== Alloc trace (last %u of %u) ===\n",
+             static_cast<unsigned>(count),
+             static_cast<unsigned>(g_allocTrace.totalOps));
+
+    uint32_t idx = (g_allocTrace.head + ALLOC_TRACE_BUFFER_SIZE - count)
+                   % ALLOC_TRACE_BUFFER_SIZE;
+
+    for (uint32_t i = 0U; i < count; ++i) {
+        const AllocTraceEntry& e = g_allocTrace.entries[idx];
+        logF_ISR("[%u] %s %uB Z%u %p %s\n",
+                 static_cast<unsigned>(i),
+                 (e.op == 'A') ? "alloc" : "free",
+                 static_cast<unsigned>(e.size),
+                 static_cast<unsigned>(e.zone),
+                 e.addr,
+                 e.task);
+        idx = (idx + 1U) % ALLOC_TRACE_BUFFER_SIZE;
+    }
+
+    logF_ISR("=== end ===\n");
+#endif
+}
+
+#endif /* ALLOC_TRACE_BUFFER_SIZE > 0 */
 
 /* ═══════════════════ AllocatorCustomCpp ═══════════════════ */
 
@@ -151,7 +234,7 @@ void* AllocatorCustomCpp::allocateWithRoute(const ZoneRoute& route, size_t size)
 #if !defined(HOST_BUILD) && ALLOC_ENABLE_LOGGING && ALLOC_LOG_SMALL_ALLOC_WARN
             const size_t thresh = (route.primary == 0U) ? kThreshFast : kThreshSlow;
             if (size > 0U && size < thresh) {
-                logW("мелкая аллокация zone%u: %u Б (порог %u), таск: %s",
+                logW("smallAlloc zone%u: %u Б (thr %u), tsk: %s",
                      route.primary,
                      static_cast<unsigned>(size),
                      static_cast<unsigned>(thresh),
@@ -178,7 +261,7 @@ void* AllocatorCustomCpp::allocateWithRoute(const ZoneRoute& route, size_t size)
 #if ALLOC_LOG_SMALL_ALLOC_WARN
             const size_t thresh = (route.secondary == 0U) ? kThreshFast : kThreshSlow;
             if (size > 0U && size < thresh) {
-                logW("мелкая аллокация zone%u: %u Б (порог %u), таск: %s",
+                logW("smallAlloc zone%u: %u Б (thr %u), tsk: %s",
                      route.secondary,
                      static_cast<unsigned>(size),
                      static_cast<unsigned>(thresh),
@@ -208,7 +291,7 @@ void* AllocatorCustomCpp::allocateWithRoute(const ZoneRoute& route, size_t size)
 #if ALLOC_LOG_SMALL_ALLOC_WARN
                 const size_t thresh = (i == 0U) ? kThreshFast : kThreshSlow;
                 if (size > 0U && size < thresh) {
-                    logW("мелкая аллокация zone%u: %u Б (порог %u), таск: %s",
+                    logW("smallAlloc zone%u: %u Б (thr %u), tsk: %s",
                          i,
                          static_cast<unsigned>(size),
                          static_cast<unsigned>(thresh),
@@ -231,6 +314,16 @@ void* AllocatorCustomCpp::allocate(size_t size) {
     lock();
     const ZoneRoute route = resolveRoute(currentZone_);
     void* result = allocateWithRoute(route, size);
+#if ALLOC_TRACE_BUFFER_SIZE > 0
+    if (result != nullptr) {
+        for (uint8_t i = 0; i < activeZones_; ++i) {
+            if (zones_[i].ownsPointer(result)) {
+                allocTraceRecord(static_cast<uint32_t>(size), i, 'A', result);
+                break;
+            }
+        }
+    }
+#endif
     unlock();
     return result;
 }
@@ -242,13 +335,16 @@ void AllocatorCustomCpp::deallocate(void* ptr) {
 
     for (uint8_t i = 0; i < activeZones_; ++i) {
         if (zones_[i].isInitialized() && zones_[i].ownsPointer(ptr)) {
+#if ALLOC_TRACE_BUFFER_SIZE > 0
+            allocTraceRecord(zones_[i].getRequestedSize(ptr), i, 'F', ptr);
+#endif
             zones_[i].deallocate(ptr);
             unlock();
             return;
         }
     }
 
-    ALLOC_ASSERT(!"Указатель не принадлежит известным зонам кучи");
+    ALLOC_FAIL("Указатель не принадлежит известным зонам кучи");
     unlock();
 }
 

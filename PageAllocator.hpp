@@ -82,6 +82,9 @@ struct PageAllocator {
     /** Получить метаданные по номеру стартовой страницы. */
     const AllocPageMeta* getMeta(uint16_t startPage) const;
 
+    /** Получить запрошенный размер по указателю пользователя. */
+    uint32_t getRequestedSize(const void* userPtr) const;
+
 private:
     static uint16_t pagesNeeded(size_t requestedSize);
 
