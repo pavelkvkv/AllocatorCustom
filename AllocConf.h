@@ -68,9 +68,14 @@
 #define ALLOC_MAX_PAGES_PER_ZONE (10U * 1024U * 1024U / ALLOC_PAGE_SIZE)
 #endif
 
-/** Размер таблицы карантина (записей о последних освобождениях). */
+/** Размер таблицы карантина (записей о последних освобождениях). Карантин per-zone*/
 #ifndef ALLOC_QUARANTINE_CAPACITY
-#define ALLOC_QUARANTINE_CAPACITY 2U
+#define ALLOC_QUARANTINE_CAPACITY 8U
+#endif
+
+/** Длина хранимого имени таска (с '\0'). Используется в карантине и трассировке. */
+#ifndef ALLOC_TASK_NAME_LEN
+#define ALLOC_TASK_NAME_LEN 12U
 #endif
 
 /* ──────────── Паттерны ──────────── */
@@ -128,7 +133,20 @@
 #define ALLOC_CHECK_ALL_ALLOCATED 1
 #endif
 
-/** Защита карантинных страниц через MPU. */
+/**
+ * Проверять карантин и аллоцированные области ВСЕХ зон при каждой операции.
+ * Без этого флага каждая зона проверяет только себя — порча в Z1 не будет
+ * обнаружена до операции именно в Z1.
+ * 0 — отключено (per-zone проверки), 1 — включено (cross-zone).
+ */
+#ifndef ALLOC_CHECK_CROSS_ZONE
+#define ALLOC_CHECK_CROSS_ZONE 1
+#endif
+
+/** Защита карантинных страниц через MPU. 
+ * Примечание: MPU-защита используется только для быстрого обнаружения UAF на отладке, 
+ * но не заменяет полноценную проверку канареек и payload.
+*/
 #ifndef ALLOC_ENABLE_MPU_PROTECTION
 #define ALLOC_ENABLE_MPU_PROTECTION 1
 #endif

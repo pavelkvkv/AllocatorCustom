@@ -16,6 +16,7 @@ void QuarantineTable::init() {
 
 bool QuarantineTable::add(uint16_t startPage, uint16_t pageCount,
                            uint32_t requestedSize, uint8_t zoneIndex,
+                           const char* taskName,
                            AllocQuarantineEntry* evicted) {
     bool didEvict = false;
 
@@ -47,7 +48,21 @@ bool QuarantineTable::add(uint16_t startPage, uint16_t pageCount,
     slot->mpuRegion     = -1;
     slot->zoneIndex     = zoneIndex;
     slot->active        = 1U;
-    slot->reserved      = 0U;
+    slot->_pad          = 0U;
+
+    /* Копируем имя таска-освободителя */
+    if (taskName != nullptr) {
+        size_t i = 0U;
+        while (i < ALLOC_TASK_NAME_LEN - 1U && taskName[i] != '\0') {
+            slot->freeTaskName[i] = taskName[i];
+            ++i;
+        }
+        slot->freeTaskName[i] = '\0';
+    } else {
+        slot->freeTaskName[0] = '?';
+        slot->freeTaskName[1] = '\0';
+    }
+
     ++activeCount;
 
     return didEvict;

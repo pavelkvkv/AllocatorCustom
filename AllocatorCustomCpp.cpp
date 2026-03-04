@@ -76,7 +76,7 @@ static void allocTraceRecord(uint32_t size, uint8_t zone, uint8_t op, void* addr
     /* Копируем имя таска — TCB может быть удалён к моменту чтения буфера */
     {
         size_t i = 0U;
-        while (i < ALLOC_TRACE_NAME_LEN - 1U && name[i] != '\0') {
+        while (i < ALLOC_TASK_NAME_LEN - 1U && name[i] != '\0') {
             e.task[i] = name[i];
             ++i;
         }
@@ -150,7 +150,8 @@ void AllocatorCustomCpp::unlock() {
 #endif
 }
 
-void AllocatorCustomCpp::assertNotISR() const {
+void AllocatorCustomCpp::assertNotISR()
+{
 #ifndef HOST_BUILD
     uint32_t ipsr;
     __asm volatile("mrs %0, ipsr" : "=r"(ipsr));
@@ -197,8 +198,9 @@ void AllocatorCustomCpp::resetState() {
 /* ───────── Маршрутизация зон ───────── */
 
 AllocatorCustomCpp::ZoneRoute
-AllocatorCustomCpp::resolveRoute(HeapZone_t zone) const {
-    ZoneRoute r{0, 1, true};
+AllocatorCustomCpp::resolveRoute(HeapZone_t zone)
+{
+	ZoneRoute r{0, 1, true};
     switch (zone) {
         case HEAP_ZONE_FAST:
             r = {0, 0, false};
@@ -312,6 +314,9 @@ void* AllocatorCustomCpp::allocateWithRoute(const ZoneRoute& route, size_t size)
 void* AllocatorCustomCpp::allocate(size_t size) {
     assertNotISR();
     lock();
+#if ALLOC_CHECK_CROSS_ZONE
+    checkAllZonesInternal();
+#endif
     const ZoneRoute route = resolveRoute(currentZone_);
     void* result = allocateWithRoute(route, size);
 #if ALLOC_TRACE_BUFFER_SIZE > 0
@@ -332,19 +337,24 @@ void AllocatorCustomCpp::deallocate(void* ptr) {
     if (ptr == nullptr) return;
     assertNotISR();
     lock();
+#if ALLOC_CHECK_CROSS_ZONE
+    checkAllZonesInternal();
+#endif
+
+    const char* taskName = currentTaskName();
 
     for (uint8_t i = 0; i < activeZones_; ++i) {
         if (zones_[i].isInitialized() && zones_[i].ownsPointer(ptr)) {
 #if ALLOC_TRACE_BUFFER_SIZE > 0
             allocTraceRecord(zones_[i].getRequestedSize(ptr), i, 'F', ptr);
 #endif
-            zones_[i].deallocate(ptr);
+            zones_[i].deallocate(ptr, taskName);
             unlock();
             return;
         }
     }
 
-    ALLOC_FAIL("Указатель не принадлежит известным зонам кучи");
+    ALLOC_FAIL("Указатель не принадлежит известным зонам кучи"); // NOLINT(cppcoreguidelines-avoid-do-while)
     unlock();
 }
 
@@ -452,6 +462,20 @@ size_t AllocatorCustomCpp::getZoneUsedBytes(uint8_t idx) {
     size_t r = (idx < activeZones_) ? zones_[idx].usedBytes() : 0U;
     unlock();
     return r;
+}
+
+/* ───────── Кросс-зонная проверка ───────── */
+
+void AllocatorCustomCpp::checkAllZonesInternal() {
+    for (uint8_t i = 0; i < activeZones_; ++i) {
+        if (!zones_[i].isInitialized()) continue;
+#if ALLOC_QUARANTINE_CHECK_LEVEL > 0
+        if (!zones_[i].verifyQuarantine()) { ALLOC_FAIL("quarantine corrupted (cross-zone check)"); } // NOLINT(cppcoreguidelines-avoid-do-while)
+#endif
+#if ALLOC_CHECK_ALL_ALLOCATED
+        if (!zones_[i].verifyAllocated()) { ALLOC_FAIL("allocated blocks corrupted (cross-zone check)"); } // NOLINT(cppcoreguidelines-avoid-do-while)
+#endif
+    }
 }
 
 /* ───────── Диагностика ───────── */

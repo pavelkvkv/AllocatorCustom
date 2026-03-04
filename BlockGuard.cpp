@@ -6,7 +6,14 @@
  * Никаких структурированных метаданных в области выделения.
  */
 #include "BlockGuard.hpp"
+#include "AllocConf.h"
 #include <cstring>
+#ifndef HOST_BUILD
+  /* Data Synchronization Barrier — сброс буфера записи */
+  #ifndef __DSB
+    #define __DSB() __asm volatile("dsb 0xF" ::: "memory") // NOLINT(bugprone-reserved-identifier)
+  #endif
+#endif
 
 namespace AllocCustom {
 
@@ -53,6 +60,9 @@ void BlockGuard::fillPadding(void* paddingStart, size_t size) {
 
 void BlockGuard::fillQuarantinePayload(void* payloadStart, size_t size) {
     std::memset(payloadStart, ALLOC_PATTERN_QUARANTINE_FILL, size);
+#ifndef HOST_BUILD
+    __DSB();  /* Гарантируем сброс буфера записи — критично для PSRAM через QSPI */
+#endif
 }
 
 void BlockGuard::fillClearedPages(void* start, size_t size) {

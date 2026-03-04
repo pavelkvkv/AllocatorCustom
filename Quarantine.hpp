@@ -34,6 +34,7 @@ struct QuarantineTable {
      */
     bool add(uint16_t startPage, uint16_t pageCount,
              uint32_t requestedSize, uint8_t zoneIndex,
+             const char* taskName,
              AllocQuarantineEntry* evicted);
 
     /** Найти самую старую активную запись. */

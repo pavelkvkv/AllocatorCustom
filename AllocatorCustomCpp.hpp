@@ -79,12 +79,13 @@ private:
         bool    trySecondary;
     };
 
-    ZoneRoute resolveRoute(HeapZone_t zone) const;
-    void*     allocateWithRoute(const ZoneRoute& route, size_t size);
+	static ZoneRoute resolveRoute(HeapZone_t zone);
+	void*     allocateWithRoute(const ZoneRoute& route, size_t size);
 
-    void lock();
-    void unlock();
-    void assertNotISR() const;
+	static void lock();
+	static void unlock();
+	static void assertNotISR();
+	void checkAllZonesInternal();
 };
 
 } // namespace AllocCustom

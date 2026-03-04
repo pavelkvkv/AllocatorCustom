@@ -160,7 +160,7 @@ void* PageAllocator::allocate(size_t requestedSize) {
 
 /* ───────── Деаллокация ───────── */
 
-void PageAllocator::deallocate(void* userPtr) {
+void PageAllocator::deallocate(void* userPtr, const char* taskName) {
     if (!initialized || userPtr == nullptr) return;
 
     /* Определяем стартовую страницу */
@@ -219,7 +219,7 @@ void PageAllocator::deallocate(void* userPtr) {
     /* Добавление в карантин (с возможным вытеснением) */
     AllocQuarantineEntry evicted{};
     const bool didEvict = quarantine.add(sp, meta.pageCount, meta.requestedSize,
-                                         zoneIndex, &evicted);
+                                         zoneIndex, taskName, &evicted);
     if (didEvict) {
         evictFromQuarantine(evicted);
     }
@@ -359,6 +359,22 @@ bool PageAllocator::ownsPointer(const void* userPtr) const {
     return ptr >= lo && ptr < hi;
 }
 
+/* ───────── Дамп карантинной таблицы ───────── */
+
+void PageAllocator::dumpQuarantineTable() const {
+    ALLOC_DIAG("=== Quarantine Z%u (%u/%u) ===",
+               zoneIndex, quarantine.count(), QuarantineTable::capacity());
+    for (uint16_t i = 0; i < QuarantineTable::capacity(); ++i) {
+        const auto* e = quarantine.entryAt(i);
+        if (!e->active) continue;
+        const void* pg = pageAddress(e->startPage);
+        const void* ud = BlockGuard::userDataFromPage(pg);
+        ALLOC_DIAG("  [%u] addr=%p size=%u pages=%u freeSeq=%u task=%s",
+                    i, ud, e->requestedSize, e->pageCount,
+                    e->freeSequence, e->freeTaskName);
+    }
+}
+
 /* ───────── Верификация карантина ───────── */
 
 bool PageAllocator::verifyQuarantine() const {
@@ -371,24 +387,39 @@ bool PageAllocator::verifyQuarantine() const {
 
         /* Проверяем канарейку хедера */
         if (!BlockGuard::validateHeader(pg)) {
-            ALLOC_DIAG("QUARANTINE: header corrupted Z%u qslot=%u page=%u addr=%p size=%u",
-                        zoneIndex, i, entry->startPage, userData, entry->requestedSize);
+            ALLOC_DIAG("QUARANTINE: header corrupted Z%u qslot=%u page=%u addr=%p size=%u freeSeq=%u freedBy=%s",
+                        zoneIndex, i, entry->startPage, userData,
+                        entry->requestedSize, entry->freeSequence, entry->freeTaskName);
+            dumpQuarantineTable();
             return false;
         }
 
         /* Проверяем канарейку футера (используем requestedSize из карантинной записи) */
         const void* footer = BlockGuard::footerFromPage(pg, entry->requestedSize);
         if (!BlockGuard::validateFooter(footer)) {
-            ALLOC_DIAG("QUARANTINE: footer corrupted Z%u qslot=%u page=%u addr=%p size=%u",
-                        zoneIndex, i, entry->startPage, userData, entry->requestedSize);
+            ALLOC_DIAG("QUARANTINE: footer corrupted Z%u qslot=%u page=%u addr=%p size=%u freeSeq=%u freedBy=%s",
+                        zoneIndex, i, entry->startPage, userData,
+                        entry->requestedSize, entry->freeSequence, entry->freeTaskName);
+            dumpQuarantineTable();
             return false;
         }
 
 #if ALLOC_QUARANTINE_CHECK_LEVEL >= 2
         const void* payload = BlockGuard::userDataFromPage(pg);
         if (!BlockGuard::validateQuarantinePayload(payload, entry->requestedSize)) {
-            ALLOC_DIAG("QUARANTINE: payload corrupted Z%u qslot=%u page=%u addr=%p size=%u",
-                        zoneIndex, i, entry->startPage, userData, entry->requestedSize);
+            /* Диагностика: ищем первый испорченный байт */
+            const auto* raw = static_cast<const uint8_t*>(payload);
+            for (size_t bi = 0; bi < entry->requestedSize; ++bi) {
+                if (raw[bi] != ALLOC_PATTERN_QUARANTINE_FILL) {
+                    ALLOC_DIAG("QUARANTINE: first bad byte offset=%u got=0x%02X expect=0x%02X",
+                                (unsigned)bi, raw[bi], ALLOC_PATTERN_QUARANTINE_FILL);
+                    break;
+                }
+            }
+            ALLOC_DIAG("QUARANTINE: payload corrupted Z%u qslot=%u page=%u addr=%p size=%u freeSeq=%u freedBy=%s",
+                        zoneIndex, i, entry->startPage, userData,
+                        entry->requestedSize, entry->freeSequence, entry->freeTaskName);
+            dumpQuarantineTable();
             return false;
         }
 #endif
@@ -397,8 +428,10 @@ bool PageAllocator::verifyQuarantine() const {
         const void* pad = BlockGuard::paddingFromPage(pg, entry->requestedSize);
         const size_t ps = BlockGuard::paddingSize(entry->requestedSize, entry->pageCount);
         if (ps > 0U && !BlockGuard::validatePadding(pad, ps)) {
-            ALLOC_DIAG("QUARANTINE: padding corrupted Z%u qslot=%u page=%u addr=%p size=%u",
-                        zoneIndex, i, entry->startPage, userData, entry->requestedSize);
+            ALLOC_DIAG("QUARANTINE: padding corrupted Z%u qslot=%u page=%u addr=%p size=%u freeSeq=%u freedBy=%s",
+                        zoneIndex, i, entry->startPage, userData,
+                        entry->requestedSize, entry->freeSequence, entry->freeTaskName);
+            dumpQuarantineTable();
             return false;
         }
 #endif

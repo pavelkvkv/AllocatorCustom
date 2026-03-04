@@ -56,7 +56,7 @@ struct PageAllocator {
 
     void  init(uint8_t* start, size_t size, uint8_t zone);
     void* allocate(size_t requestedSize);
-    void  deallocate(void* userPtr);
+    void  deallocate(void* userPtr, const char* taskName = nullptr);
     void* calloc(size_t num, size_t elemSize);
 
     /* ── Информация ── */
@@ -93,6 +93,7 @@ private:
 
     void evictFromQuarantine(const AllocQuarantineEntry& entry);
     void updateMpuProtection(uint16_t startPage, uint16_t pageCount);
+    void dumpQuarantineTable() const;
 };
 
 } // namespace AllocCustom

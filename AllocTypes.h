@@ -38,15 +38,13 @@ typedef struct {
     int8_t   mpuRegion;       /**< Регион MPU (-1 = не защищено) */
     uint8_t  zoneIndex;       /**< Индекс зоны */
     uint8_t  active;          /**< 1 = запись используется */
-    uint8_t  reserved;        /**< Выравнивание */
+    uint8_t  _pad;            /**< Выравнивание */
+    char     freeTaskName[ALLOC_TASK_NAME_LEN]; /**< Имя таска-освободителя (копия) */
 } AllocQuarantineEntry;
 
 /* ──────────── Трассировка операций ──────────── */
 
 #if ALLOC_TRACE_BUFFER_SIZE > 0
-
-/** Длина хранимого имени таска (с '\0'). */
-#define ALLOC_TRACE_NAME_LEN 12U
 
 /**
  * @brief Запись в кольцевом буфере трассировки.
@@ -57,7 +55,7 @@ typedef struct {
 typedef struct {
     void*       addr;                       /**< Адрес пользовательских данных */
     uint32_t    size;                       /**< Запрошенный размер (байт) */
-    char        task[ALLOC_TRACE_NAME_LEN]; /**< Имя таска (копия, усечённое) */
+    char        task[ALLOC_TASK_NAME_LEN];  /**< Имя таска (копия, усечённое) */
     uint8_t     zone;                       /**< Индекс зоны (0 = fast, 1 = slow) */
     uint8_t     op;                         /**< 'A' = alloc, 'F' = free */
     uint16_t    _reserved;                  /**< Выравнивание */
