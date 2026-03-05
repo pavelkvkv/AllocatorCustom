@@ -25,8 +25,6 @@ namespace AllocCustom {
 
 static_assert(ALLOC_PAGE_SIZE >= ALLOC_HEADER_SIZE + ALLOC_FOOTER_SIZE + 1U,
               "Страница слишком мала: header + footer + 1 байт payload");
-static_assert(ALLOC_HEADER_SIZE >= 1U, "Хедер-канарейка ≥ 1 байт");
-static_assert(ALLOC_FOOTER_SIZE >= 1U, "Футер-канарейка ≥ 1 байт");
 
 /* ───────── Инициализация ───────── */
 
@@ -133,13 +131,16 @@ void* PageAllocator::allocate(size_t requestedSize) {
     meta.startPage     = sp;
     meta.sequenceNum   = seq;
 
-    /* Хедер-канарейка */
     uint8_t* headerAddr = pageAddress(sp);
-    BlockGuard::writeHeader(headerAddr);
 
-    /* Футер-канарейка */
+#if ALLOC_HEADER_SIZE > 0
+    BlockGuard::writeHeader(headerAddr);
+#endif
+
+#if ALLOC_FOOTER_SIZE > 0
     void* footerAddr = BlockGuard::footerFromPage(headerAddr, meta.requestedSize);
     BlockGuard::writeFooter(footerAddr);
+#endif
 
     /* Паддинг */
     const size_t padLen = BlockGuard::paddingSize(meta.requestedSize, pages);
@@ -160,7 +161,7 @@ void* PageAllocator::allocate(size_t requestedSize) {
 
 /* ───────── Деаллокация ───────── */
 
-void PageAllocator::deallocate(void* userPtr, const char* taskName) {
+void PageAllocator::deallocate(void* userPtr, [[maybe_unused]] const char* taskName) {
     if (!initialized || userPtr == nullptr) return;
 
     /* Определяем стартовую страницу */
@@ -173,12 +174,14 @@ void PageAllocator::deallocate(void* userPtr, const char* taskName) {
     }
     const auto sp = static_cast<uint16_t>(pi);
 
+#if ALLOC_HEADER_SIZE > 0
     /* Валидация канарейки хедера */
     if (!BlockGuard::validateHeader(pageStart)) {
         ALLOC_DIAG("DEALLOC ERR: header corrupted ptr=%p Z%u page=%u",
                     userPtr, zoneIndex, sp);
         ALLOC_FAIL("dealloc: header canary corrupted");
     }
+#endif
 
     /* Получаем метаданные */
     const AllocPageMeta& meta = metaTable[sp];
@@ -193,6 +196,7 @@ void PageAllocator::deallocate(void* userPtr, const char* taskName) {
         ALLOC_FAIL("dealloc: meta pageCount is zero");
     }
 
+#if ALLOC_FOOTER_SIZE > 0
     /* Валидация канарейки футера */
     const void* footerAddr = BlockGuard::footerFromPage(pageStart, meta.requestedSize);
     if (!BlockGuard::validateFooter(footerAddr)) {
@@ -200,6 +204,7 @@ void PageAllocator::deallocate(void* userPtr, const char* taskName) {
                     userPtr, zoneIndex, sp, meta.requestedSize, meta.sequenceNum);
         ALLOC_FAIL("dealloc: footer canary corrupted");
     }
+#endif
 
     /* Принадлежность зоне */
     if (static_cast<uint32_t>(sp) + meta.pageCount > totalPages) {
@@ -216,6 +221,7 @@ void PageAllocator::deallocate(void* userPtr, const char* taskName) {
     if (!verifyAllocated()) { ALLOC_FAIL("allocated blocks corrupted on dealloc"); }
 #endif
 
+#if ALLOC_QUARANTINE_CAPACITY > 0
     /* Добавление в карантин (с возможным вытеснением) */
     AllocQuarantineEntry evicted{};
     const bool didEvict = quarantine.add(sp, meta.pageCount, meta.requestedSize,
@@ -239,6 +245,13 @@ void PageAllocator::deallocate(void* userPtr, const char* taskName) {
 #if ALLOC_ENABLE_MPU_PROTECTION
     updateMpuProtection(sp, meta.pageCount);
 #endif
+#else
+    /* Карантин отключён — освобождаем страницы немедленно */
+    std::memset(&metaTable[sp], 0, sizeof(AllocPageMeta));
+    bitmapInUse.clearRange(sp, meta.pageCount);
+    bitmapAllocated.clearRange(sp, meta.pageCount);
+    freePagesCount += meta.pageCount;
+#endif
 
     ++successfulFrees;
 }
@@ -257,6 +270,7 @@ void* PageAllocator::calloc(size_t num, size_t elemSize) {
 
 /* ───────── Вытеснение из карантина ───────── */
 
+#if ALLOC_QUARANTINE_CAPACITY > 0
 void PageAllocator::evictFromQuarantine(const AllocQuarantineEntry& entry) {
     /* Снять MPU */
     if (entry.mpuRegion >= 0) {
@@ -279,9 +293,11 @@ void PageAllocator::evictFromQuarantine(const AllocQuarantineEntry& entry) {
 
     freePagesCount += entry.pageCount;
 }
+#endif /* ALLOC_QUARANTINE_CAPACITY > 0 */
 
 /* ───────── MPU ───────── */
 
+#if ALLOC_QUARANTINE_CAPACITY > 0
 void PageAllocator::updateMpuProtection(uint16_t startPage, uint16_t pageCount) {
     if (!MpuGuard::available()) return;
 
@@ -342,6 +358,7 @@ void PageAllocator::updateMpuProtection(uint16_t startPage, uint16_t pageCount) 
         }
     }
 }
+#endif /* ALLOC_QUARANTINE_CAPACITY > 0 (updateMpuProtection) */
 
 /* ───────── Информация ───────── */
 
@@ -362,6 +379,7 @@ bool PageAllocator::ownsPointer(const void* userPtr) const {
 /* ───────── Дамп карантинной таблицы ───────── */
 
 void PageAllocator::dumpQuarantineTable() const {
+#if ALLOC_QUARANTINE_CAPACITY > 0
     ALLOC_DIAG("=== Quarantine Z%u (%u/%u) ===",
                zoneIndex, quarantine.count(), QuarantineTable::capacity());
     for (uint16_t i = 0; i < QuarantineTable::capacity(); ++i) {
@@ -373,11 +391,13 @@ void PageAllocator::dumpQuarantineTable() const {
                     i, ud, e->requestedSize, e->pageCount,
                     e->freeSequence, e->freeTaskName);
     }
+#endif
 }
 
 /* ───────── Верификация карантина ───────── */
 
 bool PageAllocator::verifyQuarantine() const {
+#if ALLOC_QUARANTINE_CAPACITY > 0
     for (uint16_t i = 0; i < QuarantineTable::capacity(); ++i) {
         const auto* entry = quarantine.entryAt(i);
         if (!entry->active) continue;
@@ -385,6 +405,7 @@ bool PageAllocator::verifyQuarantine() const {
         const void* pg = pageAddress(entry->startPage);
         const void* userData = BlockGuard::userDataFromPage(pg);
 
+#if ALLOC_HEADER_SIZE > 0
         /* Проверяем канарейку хедера */
         if (!BlockGuard::validateHeader(pg)) {
             ALLOC_DIAG("QUARANTINE: header corrupted Z%u qslot=%u page=%u addr=%p size=%u freeSeq=%u freedBy=%s",
@@ -393,7 +414,9 @@ bool PageAllocator::verifyQuarantine() const {
             dumpQuarantineTable();
             return false;
         }
+#endif
 
+#if ALLOC_FOOTER_SIZE > 0
         /* Проверяем канарейку футера (используем requestedSize из карантинной записи) */
         const void* footer = BlockGuard::footerFromPage(pg, entry->requestedSize);
         if (!BlockGuard::validateFooter(footer)) {
@@ -403,6 +426,7 @@ bool PageAllocator::verifyQuarantine() const {
             dumpQuarantineTable();
             return false;
         }
+#endif
 
 #if ALLOC_QUARANTINE_CHECK_LEVEL >= 2
         const void* payload = BlockGuard::userDataFromPage(pg);
@@ -436,6 +460,7 @@ bool PageAllocator::verifyQuarantine() const {
         }
 #endif
     }
+#endif /* ALLOC_QUARANTINE_CAPACITY > 0 */
     return true;
 }
 
@@ -456,23 +481,32 @@ bool PageAllocator::verifyAllocated() const {
             continue;
         }
 
+#if ALLOC_HEADER_SIZE > 0 || ALLOC_FOOTER_SIZE > 0
         const void* pg = pageAddress(i);
-        const void* userData = BlockGuard::userDataFromPage(pg);
+#endif
 
+#if ALLOC_HEADER_SIZE > 0
+        const void* userData = BlockGuard::userDataFromPage(pg);
         /* Валидация канарейки хедера */
         if (!BlockGuard::validateHeader(pg)) {
             ALLOC_DIAG("ALLOCATED: header corrupted Z%u page=%u addr=%p size=%u seq=%u",
                         zoneIndex, i, userData, meta.requestedSize, meta.sequenceNum);
             return false;
         }
+#endif
 
+#if ALLOC_FOOTER_SIZE > 0
         /* Валидация канарейки футера */
         const void* footer = BlockGuard::footerFromPage(pg, meta.requestedSize);
         if (!BlockGuard::validateFooter(footer)) {
+#if ALLOC_HEADER_SIZE == 0
+            const void* userData = BlockGuard::userDataFromPage(pg);
+#endif
             ALLOC_DIAG("ALLOCATED: footer corrupted Z%u page=%u addr=%p size=%u seq=%u",
                         zoneIndex, i, userData, meta.requestedSize, meta.sequenceNum);
             return false;
         }
+#endif
 
         i = static_cast<uint16_t>(i + meta.pageCount);
     }

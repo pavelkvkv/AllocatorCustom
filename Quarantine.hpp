@@ -19,6 +19,7 @@ namespace AllocCustom {
  * POD-тип: zero-init из BSS безопасен.
  */
 struct QuarantineTable {
+#if ALLOC_QUARANTINE_CAPACITY > 0
     AllocQuarantineEntry entries[ALLOC_QUARANTINE_CAPACITY];
     uint32_t nextSequence;    /**< Следующий порядковый номер free */
     uint16_t activeCount;     /**< Число активных записей */
@@ -49,6 +50,13 @@ struct QuarantineTable {
 
     const AllocQuarantineEntry* entryAt(uint16_t idx) const;
     AllocQuarantineEntry*       entryAt(uint16_t idx);
+#else
+    /** Карантин отключён (ALLOC_QUARANTINE_CAPACITY == 0). */
+    void     init()            { }
+    bool     isEmpty() const   { return true; }
+    bool     isFull()  const   { return true; }
+    uint16_t count()   const   { return 0U; }
+#endif
 
     static constexpr uint16_t capacity() { return ALLOC_QUARANTINE_CAPACITY; }
 };

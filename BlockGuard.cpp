@@ -37,19 +37,37 @@ bool BlockGuard::validateCanary(const void* src, uint32_t pattern, size_t size) 
 }
 
 void BlockGuard::writeHeader(void* dest) {
+#if ALLOC_HEADER_SIZE > 0
     writeCanary(dest, ALLOC_PATTERN_HEADER_MAGIC, ALLOC_HEADER_SIZE);
+#else
+    (void)dest;
+#endif
 }
 
 void BlockGuard::writeFooter(void* dest) {
+#if ALLOC_FOOTER_SIZE > 0
     writeCanary(dest, ALLOC_PATTERN_FOOTER_MAGIC, ALLOC_FOOTER_SIZE);
+#else
+    (void)dest;
+#endif
 }
 
 bool BlockGuard::validateHeader(const void* headerPtr) {
+#if ALLOC_HEADER_SIZE > 0
     return validateCanary(headerPtr, ALLOC_PATTERN_HEADER_MAGIC, ALLOC_HEADER_SIZE);
+#else
+    (void)headerPtr;
+    return true;
+#endif
 }
 
 bool BlockGuard::validateFooter(const void* footerPtr) {
+#if ALLOC_FOOTER_SIZE > 0
     return validateCanary(footerPtr, ALLOC_PATTERN_FOOTER_MAGIC, ALLOC_FOOTER_SIZE);
+#else
+    (void)footerPtr;
+    return true;
+#endif
 }
 
 /* ───────── Паттерны ───────── */

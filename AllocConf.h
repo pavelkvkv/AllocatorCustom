@@ -41,7 +41,7 @@
 #endif
 
 /**
- * Размер хедера-канарейки (байт). Произвольный, ≥ 1.
+ * Размер хедера-канарейки (байт). 0 = отключено, иначе произвольный.
  * Заполняется повторяющимся ALLOC_PATTERN_HEADER_MAGIC.
  */
 #ifndef ALLOC_HEADER_SIZE
@@ -49,7 +49,7 @@
 #endif
 
 /**
- * Размер футера-канарейки (байт). Произвольный, ≥ 1.
+ * Размер футера-канарейки (байт). 0 = отключено, иначе произвольный.
  * Заполняется повторяющимся ALLOC_PATTERN_FOOTER_MAGIC.
  */
 #ifndef ALLOC_FOOTER_SIZE
@@ -68,9 +68,9 @@
 #define ALLOC_MAX_PAGES_PER_ZONE (10U * 1024U * 1024U / ALLOC_PAGE_SIZE)
 #endif
 
-/** Размер таблицы карантина (записей о последних освобождениях). Карантин per-zone*/
+/** Размер таблицы карантина (записей о последних освобождениях). 0 = отключено. Per-zone. */
 #ifndef ALLOC_QUARANTINE_CAPACITY
-#define ALLOC_QUARANTINE_CAPACITY 8U
+#define ALLOC_QUARANTINE_CAPACITY 2U
 #endif
 
 /** Длина хранимого имени таска (с '\0'). Используется в карантине и трассировке. */
@@ -109,12 +109,12 @@
 
 /** Заполнять payload карантинным паттерном при free. */
 #ifndef ALLOC_FILL_ON_FREE
-#define ALLOC_FILL_ON_FREE 1
+#define ALLOC_FILL_ON_FREE 0
 #endif
 
 /** Очищать страницы при вытеснении из карантина. */
 #ifndef ALLOC_ENABLE_CLEAR_ON_EVICT
-#define ALLOC_ENABLE_CLEAR_ON_EVICT 1
+#define ALLOC_ENABLE_CLEAR_ON_EVICT 0
 #endif
 
 /**
@@ -125,12 +125,12 @@
  *   3 — + паддинг
  */
 #ifndef ALLOC_QUARANTINE_CHECK_LEVEL
-#define ALLOC_QUARANTINE_CHECK_LEVEL 2
+#define ALLOC_QUARANTINE_CHECK_LEVEL 0
 #endif
 
 /** Проверять хедеры и футеры ВСЕХ аллоцированных областей при alloc/free. */
 #ifndef ALLOC_CHECK_ALL_ALLOCATED
-#define ALLOC_CHECK_ALL_ALLOCATED 1
+#define ALLOC_CHECK_ALL_ALLOCATED 0
 #endif
 
 /**
@@ -148,7 +148,7 @@
  * но не заменяет полноценную проверку канареек и payload.
 */
 #ifndef ALLOC_ENABLE_MPU_PROTECTION
-#define ALLOC_ENABLE_MPU_PROTECTION 1
+#define ALLOC_ENABLE_MPU_PROTECTION 0
 #endif
 
 /** Первый регион MPU, доступный аллокатору. */

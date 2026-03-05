@@ -8,6 +8,8 @@
 
 namespace AllocCustom {
 
+#if ALLOC_QUARANTINE_CAPACITY > 0
+
 void QuarantineTable::init() {
     std::memset(entries, 0, sizeof(entries));
     nextSequence = 1U;   /* 0 = неиспользованная запись */
@@ -101,5 +103,7 @@ AllocQuarantineEntry* QuarantineTable::entryAt(uint16_t idx) {
     ALLOC_ASSERT(idx < ALLOC_QUARANTINE_CAPACITY);
     return &entries[idx];
 }
+
+#endif /* ALLOC_QUARANTINE_CAPACITY > 0 */
 
 } // namespace AllocCustom
