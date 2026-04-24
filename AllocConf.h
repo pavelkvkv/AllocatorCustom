@@ -168,7 +168,7 @@
  * На хосте (HOST_BUILD) логи всегда отключены.
  */
 #ifndef ALLOC_ENABLE_LOGGING
-#define ALLOC_ENABLE_LOGGING 1
+#define ALLOC_ENABLE_LOGGING 0
 #endif
 
 /**
